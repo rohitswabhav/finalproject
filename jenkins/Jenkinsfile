@@ -1,0 +1,75 @@
+pipeline {
+    agent any
+
+    tools {
+        maven 'MAVEN'
+    }
+
+    environment {
+        AWS_REGION = "ap-south-1"
+        SSH_KEY = "C:\\keys\\mykey.pem"   // update your key path
+        EC2_USER = "ec2-user"            // ubuntu = ubuntu, amazon linux = ec2-user
+    }
+
+    stages {
+
+        stage('Checkout Code') {
+            steps {
+                echo "Cloning repository..."
+                git 'https://github.com/lerndevops/samplejavaapp'
+            }
+        }
+
+        stage('Build WAR') {
+            steps {
+                echo "Building WAR..."
+                bat 'mvn clean package'
+            }
+        }
+
+        stage('Terraform Init & Apply') {
+            steps {
+                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds']]) {
+                    bat """
+                    cd terraform
+                    terraform init
+                    terraform apply -auto-approve
+                    """
+                }
+            }
+        }
+
+        stage('Get EC2 Public IP') {
+            steps {
+                script {
+                    env.EC2_IP = powershell(
+                        returnStdout: true,
+                        script: """
+                        cd terraform
+                        terraform output -raw public_ip
+                        """
+                    ).trim()
+                    echo "EC2 IP: ${env.EC2_IP}"
+                }
+            }
+        }
+
+        stage('Deploy WAR to EC2') {
+            steps {
+                echo "Copying WAR to EC2..."
+                bat """
+                pscp -i ${SSH_KEY} target\\*.war ${EC2_USER}@${EC2_IP}:/tmp/
+                """
+            }
+        }
+
+        stage('Restart Tomcat') {
+            steps {
+                echo "Restarting Tomcat on EC2..."
+                bat """
+                plink -i ${SSH_KEY} ${EC2_USER}@${EC2_IP} "sudo mv /tmp/*.war /opt/tomcat/webapps/ && sudo systemctl restart tomcat"
+                """
+            }
+        }
+    }
+}
